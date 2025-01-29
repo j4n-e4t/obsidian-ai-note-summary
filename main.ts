@@ -1,89 +1,87 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {
+	App,
+	MarkdownView,
+	Modal,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+} from "obsidian";
+import { generateAiSummary } from "./ollama";
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface AiSummaryPluginSettings {
+	endpoint: string;
+	model: string;
+	token: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
+const DEFAULT_SETTINGS: AiSummaryPluginSettings = {
+	endpoint: "https://api.openai.com",
+	model: "gpt-4o-mini",
+	token: "",
+};
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class AiSummaryPlugin extends Plugin {
+	settings: AiSummaryPluginSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+		this.addCommand({
+			id: "ai-summary-create",
+			name: "Create AI Summary",
+			callback: async () => {
+				try {
+					const markdownView =
+						this.app.workspace.getActiveViewOfType(MarkdownView);
+					const fileName =
+						this.app.workspace.getActiveFile()?.basename;
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+					if (!markdownView) {
+						new Notice("No active markdown view.");
+						return;
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+					const markdownContent = markdownView.editor.getValue();
+
+					if (!markdownContent.trim()) {
+						new Notice("The current note is empty.");
+						return;
+					}
+
+					console.log("fileName", fileName);
+
+					new Notice("Generating summary...");
+
+					const summary = await generateAiSummary(
+						fileName || "Untitled",
+						markdownContent,
+						{
+							endpoint: this.settings.endpoint,
+							token: this.settings.token,
+							modelName: this.settings.model,
+						}
+					);
+
+					new SummaryModal(this.app, summary).open();
+				} catch (error) {
+					console.error("Error generating summary:", error);
+					new Notice(
+						"Failed to generate summary. Please check the console for details."
+					);
 				}
-			}
+			},
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
+		this.addSettingTab(new AiSummarySettingTab(this.app, this));
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			await this.loadData()
+		);
 	}
 
 	async saveSettings() {
@@ -91,44 +89,109 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
+class SummaryModal extends Modal {
+	summary: string;
+
+	constructor(app: App, summary: string) {
 		super(app);
+		this.summary = summary;
 	}
 
 	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl("h2", { text: "AI Generated Summary" });
+
+		// Add summary text
+		const summaryEl = contentEl.createEl("div", { cls: "summary-content" });
+		summaryEl.createEl("p", { text: this.summary });
+
+		// Add copy button
+		const buttonContainer = contentEl.createEl("div", {
+			cls: "button-container",
+		});
+		const copyButton = buttonContainer.createEl("button", {
+			text: "Copy to Clipboard",
+		});
+		const insertButton = buttonContainer.createEl("button", {
+			text: "Add to Note",
+		});
+
+		copyButton.addEventListener("click", () => {
+			navigator.clipboard.writeText(this.summary);
+			new Notice("Summary copied to clipboard!");
+		});
+
+		insertButton.addEventListener("click", async () => {
+			const activeView =
+				this.app.workspace.getActiveViewOfType(MarkdownView);
+
+			if (!activeView) {
+				new Notice("No active markdown view.");
+				return;
+			}
+
+			const editor = activeView.editor;
+			editor.replaceRange(this.summary + "\n\n", { line: 0, ch: 0 });
+			this.close();
+		});
 	}
 
 	onClose() {
-		const {contentEl} = this;
+		const { contentEl } = this;
 		contentEl.empty();
 	}
 }
 
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+class AiSummarySettingTab extends PluginSettingTab {
+	plugin: AiSummaryPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: AiSummaryPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
-		const {containerEl} = this;
-
+		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+		containerEl.createEl("h2", { text: "AI Summary Settings" });
+
+		new Setting(containerEl).setName("Endpoint").addText((text) =>
+			text
+				.setPlaceholder("Enter URL")
+				.setValue(this.plugin.settings.endpoint)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.endpoint = value;
 					await this.plugin.saveSettings();
-				}));
+				})
+		);
+
+		new Setting(containerEl)
+			.setName("Model")
+			.setDesc("The model to use for summaries.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Enter model name")
+					.setValue(this.plugin.settings.model)
+					.onChange(async (value) => {
+						this.plugin.settings.model = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Token")
+			.setDesc("API token to use for authentication.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Enter API token")
+					.setValue(this.plugin.settings.token)
+					.onChange(async (value) => {
+						this.plugin.settings.token = value;
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 }
